@@ -1,0 +1,31 @@
+# To enable auto-deploy: move this file to .github/workflows/deploy.yml
+# (needs a gh token with 'workflow' scope: `gh auth refresh -s workflow`,
+#  or just add it via the GitHub web UI). The site also deploys via `wrangler pages deploy`.
+
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Pages
+        # Pinned to an immutable commit SHA (supply-chain hardening). This is
+        # cloudflare/wrangler-action v3.15.0 — bump the SHA + comment together
+        # when updating (e.g. via Dependabot/Renovate).
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          # GitHub repo secrets — Settings → Secrets and variables → Actions:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # output dir + KV binding come from wrangler.toml (pages_build_output_dir)
+          command: pages deploy --project-name=rocsys-rag --branch=main

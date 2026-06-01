@@ -1,0 +1,17 @@
+name = "rocsys-rag"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "public"
+
+# Non-secret config. Max authenticated questions per IP per 12h window.
+[vars]
+RATE_LIMIT_PER_WINDOW = "30"
+
+# KV namespace backing the per-IP rate limiter.
+[[kv_namespaces]]
+binding = "RATELIMIT"
+id = "e492b299a269465483718ef3d1512167"
+
+# Runtime secrets are NOT stored here. Set them on the Cloudflare Pages project:
+#   APP_PASSWORD, WEAVIATE_URL, WEAVIATE_API_KEY, ANTHROPIC_API_KEY
+# via the dashboard (Settings → Environment variables / Secrets) or:
+#   npx wrangler pages secret put APP_PASSWORD --project-name rocsys-rag

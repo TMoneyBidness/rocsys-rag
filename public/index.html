@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rocsys Research Assistant</title>
+<!-- vendored locally (same-origin) — no CDN/supply-chain risk, no SRI needed -->
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --txt:#e6edf3; --muted:#9aa7b4; --accent:#3b82f6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         background:var(--bg); color:var(--txt); }
+  header { padding:18px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:17px; margin:0; font-weight:650; }
+  header span { color:var(--muted); font-size:13px; }
+  main { max-width:860px; margin:0 auto; padding:22px; }
+
+  /* password gate */
+  #gate { position:fixed; inset:0; background:var(--bg); display:flex; align-items:center;
+          justify-content:center; flex-direction:column; gap:14px; z-index:10; }
+  #gate h2 { margin:0; font-weight:600; }
+  #gate p { color:var(--muted); margin:0 0 6px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input, select, textarea, button { font:inherit; color:var(--txt); background:var(--panel);
+    border:1px solid var(--line); border-radius:8px; padding:9px 11px; }
+  textarea { width:100%; resize:vertical; min-height:78px; }
+  button { background:var(--accent); border-color:var(--accent); color:#fff; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:.55; cursor:default; }
+  label { color:var(--muted); font-size:13px; display:inline-flex; align-items:center; gap:6px; }
+
+  .controls { display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin:12px 0 14px; }
+  .k-val { color:var(--txt); font-variant-numeric:tabular-nums; min-width:1.6em; text-align:right; }
+  #answer { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+            padding:4px 20px; margin-top:18px; }
+  #answer h1,#answer h2,#answer h3 { line-height:1.3; }
+  #answer table { border-collapse:collapse; }
+  #answer th,#answer td { border:1px solid var(--line); padding:6px 10px; }
+  #answer code { background:#0b0e13; padding:1px 5px; border-radius:5px; }
+  .sources { margin-top:16px; font-size:13px; }
+  .sources h3 { color:var(--muted); font-weight:600; margin:0 0 6px; }
+  .sources a { color:var(--accent); text-decoration:none; }
+  .sources li { margin:3px 0; }
+  .muted { color:var(--muted); }
+  .err { color:#f87171; }
+  .spin { display:inline-block; width:14px; height:14px; border:2px solid var(--line);
+          border-top-color:var(--accent); border-radius:50%; animation:s .7s linear infinite; vertical-align:-2px; }
+  @keyframes s { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <h2>Rocsys Research Assistant</h2>
+  <p>Enter the access password to continue.</p>
+  <div class="row">
+    <input id="pw" type="password" placeholder="password" autocomplete="current-password" />
+    <button id="pwBtn">Enter</button>
+  </div>
+  <p id="pwErr" class="err"></p>
+</div>
+
+<header>
+  <h1>Rocsys Research Assistant</h1>
+  <span>RAG over rocsys.com + research notes</span>
+</header>
+
+<main>
+  <textarea id="q" placeholder="Ask anything about Rocsys — e.g. What is their go-to-market model? How much does the M1 cost?"></textarea>
+
+  <div class="controls">
+    <label>Sources (k):
+      <input id="k" type="range" min="1" max="20" value="8" />
+      <span id="kVal" class="k-val">8</span>
+    </label>
+    <label>Model:
+      <select id="model">
+        <option value="haiku">Haiku 4.5 — fast</option>
+        <option value="sonnet">Sonnet 4.6 — balanced</option>
+        <option value="opus">Opus 4.8 — deep</option>
+      </select>
+    </label>
+    <label><input id="reasoning" type="checkbox" /> Reasoning</label>
+    <button id="ask">Ask</button>
+  </div>
+
+  <div id="status" class="muted"></div>
+  <div id="answer" style="display:none"></div>
+  <div id="sources" class="sources"></div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const PW_KEY = "rocsys_pw";
+
+  // ---- password gate (UI convenience; the API enforces it server-side) ----
+  function showApp() { $("gate").style.display = "none"; }
+  if (sessionStorage.getItem(PW_KEY)) showApp();
+  $("pwBtn").onclick = () => {
+    const v = $("pw").value.trim();
+    if (!v) return;
+    sessionStorage.setItem(PW_KEY, v);
+    $("pwErr").textContent = "";
+    showApp();
+  };
+  $("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pwBtn").click(); });
+
+  // ---- controls ----
+  $("k").addEventListener("input", () => ($("kVal").textContent = $("k").value));
+  $("q").addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
+  });
+  $("ask").onclick = ask;
+
+  function render(md) {
+    // markdown -> HTML, then sanitize (answer text is model output; treat as untrusted)
+    try {
+      if (!window.marked || !window.DOMPurify) return null;
+      return DOMPurify.sanitize(marked.parse(md));
+    } catch { return null; }
+  }
+
+  async function ask() {
+    const question = $("q").value.trim();
+    if (!question) return;
+    const password = sessionStorage.getItem(PW_KEY) || "";
+
+    $("ask").disabled = true;
+    $("status").innerHTML = '<span class="spin"></span> Thinking…';
+    $("answer").style.display = "none";
+    $("sources").innerHTML = "";
+
+    try {
+      const resp = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question,
+          password,
+          k: parseInt($("k").value, 10),
+          model: $("model").value,
+          reasoning: $("reasoning").checked,
+        }),
+      });
+      const data = await resp.json();
+
+      if (resp.status === 401) {
+        sessionStorage.removeItem(PW_KEY);
+        $("gate").style.display = "flex";
+        $("pwErr").textContent = "Wrong password.";
+        return;
+      }
+      if (!resp.ok) {
+        $("status").innerHTML = '<span class="err">' + (data.error || "Request failed") + "</span>";
+        return;
+      }
+
+      $("status").textContent = "";
+      const html = render(data.answer);
+      const ans = $("answer");
+      ans.style.display = "block";
+      if (html) ans.innerHTML = html;
+      else { ans.textContent = data.answer; ans.style.whiteSpace = "pre-wrap"; }
+
+      if (data.sources && data.sources.length) {
+        // Build with DOM nodes + textContent so scraped titles/URLs can't inject HTML.
+        const box = $("sources");
+        box.textContent = "";
+        const h3 = document.createElement("h3");
+        h3.textContent = "Sources";
+        const ul = document.createElement("ul");
+        for (const s of data.sources) {
+          const li = document.createElement("li");
+          const isHttp = typeof s.url === "string" && /^https?:\/\//.test(s.url);
+          if (isHttp) {
+            const a = document.createElement("a");
+            a.href = s.url;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.textContent = s.title || s.url;
+            li.appendChild(a);
+          } else {
+            li.textContent = (s.title || "") + (s.url ? " (" + s.url + ")" : "");
+          }
+          if (s.score != null) {
+            const sc = document.createElement("span");
+            sc.className = "muted";
+            sc.textContent = " (" + Number(s.score).toFixed(3) + ")";
+            li.appendChild(sc);
+          }
+          ul.appendChild(li);
+        }
+        box.appendChild(h3);
+        box.appendChild(ul);
+      }
+    } catch (e) {
+      $("status").innerHTML = '<span class="err">Network error: ' + e.message + "</span>";
+    } finally {
+      $("ask").disabled = false;
+    }
+  }
+</script>
+</body>
+</html>
