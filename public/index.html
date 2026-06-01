@@ -48,8 +48,11 @@
   button:disabled { opacity:.55; cursor:default; }
   label { color:var(--muted); font-size:13px; display:inline-flex; align-items:center; gap:6px; }
 
-  .controls { display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin:12px 0 14px; }
+  .controls { display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin:12px 0 10px; }
   .k-val { color:var(--txt); font-variant-numeric:tabular-nums; min-width:1.6em; text-align:right; }
+  .histbar { display:flex; gap:10px; align-items:center; margin:0 0 6px; flex-wrap:wrap; }
+  .histbar label { flex:1 1 auto; display:flex; gap:6px; align-items:center; }
+  .histbar select { flex:1 1 auto; max-width:620px; }
   #answer { background:var(--panel); border:1px solid var(--line); border-radius:10px;
             padding:4px 20px; margin-top:18px; }
   #answer h1,#answer h2,#answer h3 { line-height:1.3; }
@@ -102,6 +105,13 @@
     </label>
     <label><input id="reasoning" type="checkbox" /> Reasoning</label>
     <button id="ask">Ask</button>
+  </div>
+
+  <div class="histbar">
+    <label>History:
+      <select id="history"></select>
+    </label>
+    <button id="clearHist" class="ghost" type="button">Clear</button>
   </div>
 
   <div id="status" class="muted"></div>
@@ -211,6 +221,89 @@ Now write the answer, citing excerpts inline as [n].</textarea>
     } catch { return null; }
   }
 
+  // Render an answer + sources (used by a live ask and by replaying history).
+  function showResult(answer, sources, note) {
+    const ans = $("answer");
+    ans.style.display = "block";
+    ans.style.whiteSpace = "";
+    const html = render(answer);
+    if (html) ans.innerHTML = html;
+    else { ans.textContent = answer; ans.style.whiteSpace = "pre-wrap"; }
+
+    const box = $("sources");
+    box.textContent = "";
+    if (sources && sources.length) {
+      const h3 = document.createElement("h3");
+      h3.textContent = note ? "Sources · " + note : "Sources";
+      const ul = document.createElement("ul");
+      for (const s of sources) {
+        const li = document.createElement("li");
+        const isHttp = typeof s.url === "string" && /^https?:\/\//.test(s.url);
+        if (isHttp) {
+          const a = document.createElement("a");
+          a.href = s.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+          a.textContent = s.title || s.url;
+          li.appendChild(a);
+        } else {
+          li.textContent = (s.title || "") + (s.url ? " (" + s.url + ")" : "");
+        }
+        if (s.score != null) {
+          const sc = document.createElement("span");
+          sc.className = "muted";
+          sc.textContent = " (" + Number(s.score).toFixed(3) + ")";
+          li.appendChild(sc);
+        }
+        ul.appendChild(li);
+      }
+      box.appendChild(h3); box.appendChild(ul);
+    }
+  }
+
+  // ---- conversation history (saved per-browser, newest first) ----
+  const HKEY = "rocsys_history";
+  let convHist = [];
+  try { convHist = JSON.parse(localStorage.getItem(HKEY) || "[]"); } catch { convHist = []; }
+
+  function saveHist() {
+    convHist = convHist.slice(-50); // cap stored turns
+    try { localStorage.setItem(HKEY, JSON.stringify(convHist)); } catch {}
+  }
+  function renderHist() {
+    const sel = $("history");
+    sel.innerHTML = "";
+    const def = document.createElement("option");
+    def.value = "";
+    def.textContent = convHist.length
+      ? `${convHist.length} past question${convHist.length > 1 ? "s" : ""} — pick one to view…`
+      : "No history yet — ask something";
+    sel.appendChild(def);
+    for (let i = convHist.length - 1; i >= 0; i--) {
+      const it = convHist[i];
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = it.q.length > 80 ? it.q.slice(0, 80) + "…" : it.q;
+      sel.appendChild(opt);
+    }
+  }
+  function pushHist(entry) { convHist.push(entry); saveHist(); renderHist(); }
+
+  $("history").addEventListener("change", (ev) => {
+    const i = ev.target.value;
+    if (i === "") return;
+    const it = convHist[Number(i)];
+    if (!it) return;
+    $("q").value = it.q;
+    $("status").textContent = "";
+    showResult(it.a, it.sources, "from history");
+    $("answer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+  $("clearHist").onclick = () => {
+    if (!convHist.length) return;
+    convHist = []; saveHist(); renderHist();
+    $("answer").style.display = "none"; $("sources").textContent = "";
+  };
+  renderHist();
+
   async function ask() {
     const question = $("q").value.trim();
     if (!question) return;
@@ -249,43 +342,11 @@ Now write the answer, citing excerpts inline as [n].</textarea>
       }
 
       $("status").textContent = "";
-      const html = render(data.answer);
-      const ans = $("answer");
-      ans.style.display = "block";
-      if (html) ans.innerHTML = html;
-      else { ans.textContent = data.answer; ans.style.whiteSpace = "pre-wrap"; }
-
-      if (data.sources && data.sources.length) {
-        // Build with DOM nodes + textContent so scraped titles/URLs can't inject HTML.
-        const box = $("sources");
-        box.textContent = "";
-        const h3 = document.createElement("h3");
-        h3.textContent = "Sources";
-        const ul = document.createElement("ul");
-        for (const s of data.sources) {
-          const li = document.createElement("li");
-          const isHttp = typeof s.url === "string" && /^https?:\/\//.test(s.url);
-          if (isHttp) {
-            const a = document.createElement("a");
-            a.href = s.url;
-            a.target = "_blank";
-            a.rel = "noopener noreferrer";
-            a.textContent = s.title || s.url;
-            li.appendChild(a);
-          } else {
-            li.textContent = (s.title || "") + (s.url ? " (" + s.url + ")" : "");
-          }
-          if (s.score != null) {
-            const sc = document.createElement("span");
-            sc.className = "muted";
-            sc.textContent = " (" + Number(s.score).toFixed(3) + ")";
-            li.appendChild(sc);
-          }
-          ul.appendChild(li);
-        }
-        box.appendChild(h3);
-        box.appendChild(ul);
-      }
+      showResult(data.answer, data.sources);
+      pushHist({
+        q: question, a: data.answer, sources: data.sources || [],
+        model: data.model, ts: Date.now(),
+      });
     } catch (e) {
       $("status").innerHTML = '<span class="err">Network error: ' + e.message + "</span>";
     } finally {
