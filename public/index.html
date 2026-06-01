@@ -122,10 +122,9 @@
 <aside class="col-side">
   <div class="panel">
     <h3>Edit the prompts</h3>
-    <p class="hint">Customize how the assistant answers, then <b>Save</b>. Your edits are
-      stored in <b>this browser</b> and used on your next questions (they don't change the
-      app for anyone else). The retrieval prompt must keep the
-      <code>{question}</code> and <code>{excerpts}</code> placeholders.</p>
+    <p class="hint">Customize how the assistant answers, then <b>Save</b>. Saved
+      <b>for everyone</b> and applied to all future questions. The retrieval prompt must
+      keep the <code>{question}</code> and <code>{excerpts}</code> placeholders.</p>
 
     <label class="plab" for="sysPrompt">Research prompt (synthesis) — the rules &amp; style the answer follows</label>
     <textarea id="sysPrompt" class="ptext" rows="7">You are a research assistant answering questions about Rocsys using ONLY the provided numbered excerpts. Write a direct, well-structured answer in your own words and cite sources inline as [n] matching the excerpt numbers. Do NOT echo or reproduce the excerpts verbatim, and begin with the answer itself. If the excerpts do not cover the question, say so plainly.</textarea>
@@ -152,15 +151,58 @@ Now write the answer, citing excerpts inline as [n].</textarea>
   const $ = (id) => document.getElementById(id);
   const PW_KEY = "rocsys_pw";
 
-  // ---- password gate (UI convenience; the API enforces it server-side) ----
+  // ---- shared state (loaded from the server; reflected for ALL users) ----
+  let convHist = [];
+  const DEFAULT_SYS = $("sysPrompt").value;
+  const DEFAULT_TMPL = $("usrPrompt").value;
+
+  async function apiState(payload) {
+    const password = sessionStorage.getItem(PW_KEY) || "";
+    const resp = await fetch("/api/state", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password, ...payload }),
+    });
+    if (resp.status === 401) throw new Error("401");
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || "request failed");
+    return data;
+  }
+  async function loadState() {
+    const data = await apiState({ op: "load" });
+    convHist = Array.isArray(data.history) ? data.history : [];
+    renderHist();
+    if (data.prompts && typeof data.prompts.system === "string") {
+      $("sysPrompt").value = data.prompts.system;
+      if (typeof data.prompts.userTemplate === "string" && data.prompts.userTemplate)
+        $("usrPrompt").value = data.prompts.userTemplate;
+    }
+  }
+  async function refreshHistory() {
+    try {
+      const data = await apiState({ op: "load" });
+      convHist = Array.isArray(data.history) ? data.history : convHist;
+      renderHist();
+    } catch { /* keep current view on a transient error */ }
+  }
+
+  // ---- password gate (server-enforced; entry also validates the password) ----
   function showApp() { $("gate").style.display = "none"; }
-  if (sessionStorage.getItem(PW_KEY)) showApp();
+  function showGate(msg) { $("gate").style.display = "flex"; $("pwErr").textContent = msg || ""; }
+  async function enter() {
+    if (!sessionStorage.getItem(PW_KEY)) return;
+    try { await loadState(); showApp(); }
+    catch (e) {
+      sessionStorage.removeItem(PW_KEY);
+      showGate(e.message === "401" ? "Wrong password." : "Couldn't connect — try again.");
+    }
+  }
   $("pwBtn").onclick = () => {
     const v = $("pw").value.trim();
     if (!v) return;
     sessionStorage.setItem(PW_KEY, v);
     $("pwErr").textContent = "";
-    showApp();
+    enter();
   };
   $("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pwBtn").click(); });
 
@@ -177,36 +219,30 @@ Now write the answer, citing excerpts inline as [n].</textarea>
   $("reasoning").addEventListener("change", updateMeta);
   updateMeta();
 
-  // ---- editable prompts (saved in this browser, applied to your next questions) ----
-  const DEFAULT_SYS = $("sysPrompt").value;
-  const DEFAULT_TMPL = $("usrPrompt").value;
-  const lsGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
-  if (lsGet("rocsys_sys")) $("sysPrompt").value = lsGet("rocsys_sys");
-  if (lsGet("rocsys_tmpl")) $("usrPrompt").value = lsGet("rocsys_tmpl");
-
+  // ---- editable prompts (saved on the server → applied for everyone) ----
   function flashSave(msg, isErr) {
     const el = $("saveStatus");
     el.textContent = msg;
     el.className = "meta" + (isErr ? " err" : "");
-    if (!isErr) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 2600);
+    if (!isErr) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 2800);
   }
-  $("savePrompts").onclick = () => {
+  $("savePrompts").onclick = async () => {
     const tmpl = $("usrPrompt").value;
     if (!tmpl.includes("{question}") || !tmpl.includes("{excerpts}")) {
       flashSave("Retrieval prompt must keep {question} and {excerpts}.", true);
       return;
     }
     try {
-      localStorage.setItem("rocsys_sys", $("sysPrompt").value);
-      localStorage.setItem("rocsys_tmpl", tmpl);
-      flashSave("Saved ✓ — applied to your next question.");
-    } catch { flashSave("Couldn't save (browser storage blocked).", true); }
+      await apiState({ op: "savePrompts", system: $("sysPrompt").value, userTemplate: tmpl });
+      flashSave("Saved ✓ — applied for everyone.");
+    } catch (e) {
+      flashSave(e.message === "401" ? "Session expired — re-enter password." : "Save failed.", true);
+    }
   };
   $("resetPrompts").onclick = () => {
     $("sysPrompt").value = DEFAULT_SYS;
     $("usrPrompt").value = DEFAULT_TMPL;
-    try { localStorage.removeItem("rocsys_sys"); localStorage.removeItem("rocsys_tmpl"); } catch {}
-    flashSave("Reset to defaults.");
+    flashSave("Reset to defaults — click Save to apply for everyone.");
   };
   $("q").addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
@@ -259,15 +295,7 @@ Now write the answer, citing excerpts inline as [n].</textarea>
     }
   }
 
-  // ---- conversation history (saved per-browser, newest first) ----
-  const HKEY = "rocsys_history";
-  let convHist = [];
-  try { convHist = JSON.parse(localStorage.getItem(HKEY) || "[]"); } catch { convHist = []; }
-
-  function saveHist() {
-    convHist = convHist.slice(-50); // cap stored turns
-    try { localStorage.setItem(HKEY, JSON.stringify(convHist)); } catch {}
-  }
+  // ---- conversation history (shared via the server, newest first) ----
   function renderHist() {
     const sel = $("history");
     sel.innerHTML = "";
@@ -281,12 +309,11 @@ Now write the answer, citing excerpts inline as [n].</textarea>
       const it = convHist[i];
       const opt = document.createElement("option");
       opt.value = String(i);
-      opt.textContent = it.q.length > 80 ? it.q.slice(0, 80) + "…" : it.q;
+      const q = it.q || "(question)";
+      opt.textContent = q.length > 80 ? q.slice(0, 80) + "…" : q;
       sel.appendChild(opt);
     }
   }
-  function pushHist(entry) { convHist.push(entry); saveHist(); renderHist(); }
-
   $("history").addEventListener("change", (ev) => {
     const i = ev.target.value;
     if (i === "") return;
@@ -297,10 +324,15 @@ Now write the answer, citing excerpts inline as [n].</textarea>
     showResult(it.a, it.sources, "from history");
     $("answer").scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
-  $("clearHist").onclick = () => {
+  $("clearHist").onclick = async () => {
     if (!convHist.length) return;
-    convHist = []; saveHist(); renderHist();
-    $("answer").style.display = "none"; $("sources").textContent = "";
+    try {
+      await apiState({ op: "clearHistory" });
+      convHist = []; renderHist();
+      $("answer").style.display = "none"; $("sources").textContent = "";
+    } catch {
+      $("status").innerHTML = '<span class="err">Could not clear history.</span>';
+    }
   };
   renderHist();
 
@@ -343,16 +375,16 @@ Now write the answer, citing excerpts inline as [n].</textarea>
 
       $("status").textContent = "";
       showResult(data.answer, data.sources);
-      pushHist({
-        q: question, a: data.answer, sources: data.sources || [],
-        model: data.model, ts: Date.now(),
-      });
+      refreshHistory(); // re-pull shared history (now includes this turn + anyone else's)
     } catch (e) {
       $("status").innerHTML = '<span class="err">Network error: ' + e.message + "</span>";
     } finally {
       $("ask").disabled = false;
     }
   }
+
+  // boot: if a password is already in this session, validate it + load shared state
+  if (sessionStorage.getItem(PW_KEY)) enter();
 </script>
 </body>
 </html>

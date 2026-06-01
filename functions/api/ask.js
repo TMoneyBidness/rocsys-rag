@@ -103,7 +103,20 @@ export async function onRequestPost(context) {
     return json({ error: "Synthesis failed: " + e.message }, 502);
   }
 
-  return json({ answer, sources: dedupeSources(hits), model: body.model || "haiku" });
+  const sources = dedupeSources(hits);
+  // Append to the shared history (reflected for all users). Best-effort — a KV
+  // hiccup must never fail an answer the caller already paid for.
+  try {
+    if (env.RATELIMIT) {
+      const HKEY = "shared:history";
+      const cur = JSON.parse((await env.RATELIMIT.get(HKEY)) || "[]");
+      cur.push({ q: question, a: answer, sources, model: body.model || "haiku", ts: Date.now() });
+      await env.RATELIMIT.put(HKEY, JSON.stringify(cur.slice(-100)));
+    }
+  } catch {
+    /* ignore history write hiccups */
+  }
+  return json({ answer, sources, model: body.model || "haiku" });
 }
 
 function clamp(n, lo, hi) {
