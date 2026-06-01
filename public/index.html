@@ -15,7 +15,17 @@
   header { padding:18px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
   header h1 { font-size:17px; margin:0; font-weight:650; }
   header span { color:var(--muted); font-size:13px; }
-  main { max-width:860px; margin:0 auto; padding:22px; }
+  .wrap { display:flex; gap:24px; max-width:1240px; margin:0 auto; padding:22px; align-items:flex-start; }
+  .col-main { flex:1 1 auto; min-width:0; }
+  .col-side { flex:0 0 380px; position:sticky; top:18px; }
+  @media (max-width:900px){ .wrap{ flex-direction:column; } .col-side{ flex-basis:auto; width:100%; position:static; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .panel h3 { margin:14px 0 7px; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  .panel h3:first-child { margin-top:0; }
+  .panel pre { white-space:pre-wrap; word-break:break-word; margin:0;
+               font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
+               background:#0b0e13; border:1px solid var(--line); border-radius:8px; padding:10px 12px; color:#cdd6e0; }
+  .panel .meta { font-size:12px; color:var(--muted); margin-top:8px; }
 
   /* password gate */
   #gate { position:fixed; inset:0; background:var(--bg); display:flex; align-items:center;
@@ -66,7 +76,8 @@
   <span>RAG over rocsys.com + research notes</span>
 </header>
 
-<main>
+<div class="wrap">
+<main class="col-main">
   <textarea id="q" placeholder="Ask anything about Rocsys — e.g. What is their go-to-market model? How much does the M1 cost?"></textarea>
 
   <div class="controls">
@@ -90,6 +101,25 @@
   <div id="sources" class="sources"></div>
 </main>
 
+<aside class="col-side">
+  <div class="panel">
+    <h3>Research prompt (synthesis)</h3>
+    <pre id="sysPrompt">You are a research assistant answering questions about Rocsys using ONLY the provided numbered excerpts. Write a direct, well-structured answer in your own words and cite sources inline as [n] matching the excerpt numbers. Do NOT echo or reproduce the excerpts verbatim, and begin with the answer itself. If the excerpts do not cover the question, say so plainly.</pre>
+
+    <h3>Retrieval prompt</h3>
+    <pre id="usrPrompt">Question: {your question}
+
+Numbered excerpts (context only — do not repeat them back):
+[1] {title} — {url}
+{chunk text}
+… ({k} excerpts total)
+
+Now write the answer, citing excerpts inline as [n].</pre>
+    <div class="meta" id="retrMeta"></div>
+  </div>
+</aside>
+</div>
+
 <script>
   const $ = (id) => document.getElementById(id);
   const PW_KEY = "rocsys_pw";
@@ -107,7 +137,17 @@
   $("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pwBtn").click(); });
 
   // ---- controls ----
-  $("k").addEventListener("input", () => ($("kVal").textContent = $("k").value));
+  function updateMeta() {
+    const k = $("k").value;
+    const model = $("model").selectedOptions[0].text.split(" — ")[0];
+    const reasoning = $("reasoning").checked ? " · reasoning on" : "";
+    $("retrMeta").textContent =
+      `Hybrid search (vector + BM25, α=0.5) · RocsysContent · k=${k} · ${model}${reasoning}`;
+  }
+  $("k").addEventListener("input", () => { $("kVal").textContent = $("k").value; updateMeta(); });
+  $("model").addEventListener("change", updateMeta);
+  $("reasoning").addEventListener("change", updateMeta);
+  updateMeta();
   $("q").addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
   });
