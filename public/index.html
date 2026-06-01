@@ -26,6 +26,14 @@
                font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
                background:#0b0e13; border:1px solid var(--line); border-radius:8px; padding:10px 12px; color:#cdd6e0; }
   .panel .meta { font-size:12px; color:var(--muted); margin-top:8px; }
+  .panel .hint { font-size:12px; color:var(--muted); margin:2px 0 12px; line-height:1.5; }
+  .panel .hint code { background:#0b0e13; padding:1px 5px; border-radius:4px; font-size:11px; }
+  .plab { display:block; font-size:12px; color:var(--muted); margin:12px 0 5px; }
+  .ptext { width:100%; resize:vertical; color:#cdd6e0; background:#0b0e13;
+           border:1px solid var(--line); border-radius:8px; padding:9px 11px;
+           font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .prow { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  button.ghost { background:transparent; color:var(--muted); border-color:var(--line); font-weight:500; }
 
   /* password gate */
   #gate { position:fixed; inset:0; background:var(--bg); display:flex; align-items:center;
@@ -103,18 +111,28 @@
 
 <aside class="col-side">
   <div class="panel">
-    <h3>Research prompt (synthesis)</h3>
-    <pre id="sysPrompt">You are a research assistant answering questions about Rocsys using ONLY the provided numbered excerpts. Write a direct, well-structured answer in your own words and cite sources inline as [n] matching the excerpt numbers. Do NOT echo or reproduce the excerpts verbatim, and begin with the answer itself. If the excerpts do not cover the question, say so plainly.</pre>
+    <h3>Edit the prompts</h3>
+    <p class="hint">Customize how the assistant answers, then <b>Save</b>. Your edits are
+      stored in <b>this browser</b> and used on your next questions (they don't change the
+      app for anyone else). The retrieval prompt must keep the
+      <code>{question}</code> and <code>{excerpts}</code> placeholders.</p>
 
-    <h3>Retrieval prompt</h3>
-    <pre id="usrPrompt">Question: {your question}
+    <label class="plab" for="sysPrompt">Research prompt (synthesis) — the rules &amp; style the answer follows</label>
+    <textarea id="sysPrompt" class="ptext" rows="7">You are a research assistant answering questions about Rocsys using ONLY the provided numbered excerpts. Write a direct, well-structured answer in your own words and cite sources inline as [n] matching the excerpt numbers. Do NOT echo or reproduce the excerpts verbatim, and begin with the answer itself. If the excerpts do not cover the question, say so plainly.</textarea>
+
+    <label class="plab" for="usrPrompt">Retrieval prompt — wraps your question + the retrieved chunks</label>
+    <textarea id="usrPrompt" class="ptext" rows="7">Question: {question}
 
 Numbered excerpts (context only — do not repeat them back):
-[1] {title} — {url}
-{chunk text}
-… ({k} excerpts total)
+{excerpts}
 
-Now write the answer, citing excerpts inline as [n].</pre>
+Now write the answer, citing excerpts inline as [n].</textarea>
+
+    <div class="prow">
+      <button id="savePrompts">Save</button>
+      <button id="resetPrompts" class="ghost">Reset</button>
+      <span id="saveStatus" class="meta"></span>
+    </div>
     <div class="meta" id="retrMeta"></div>
   </div>
 </aside>
@@ -148,6 +166,38 @@ Now write the answer, citing excerpts inline as [n].</pre>
   $("model").addEventListener("change", updateMeta);
   $("reasoning").addEventListener("change", updateMeta);
   updateMeta();
+
+  // ---- editable prompts (saved in this browser, applied to your next questions) ----
+  const DEFAULT_SYS = $("sysPrompt").value;
+  const DEFAULT_TMPL = $("usrPrompt").value;
+  const lsGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  if (lsGet("rocsys_sys")) $("sysPrompt").value = lsGet("rocsys_sys");
+  if (lsGet("rocsys_tmpl")) $("usrPrompt").value = lsGet("rocsys_tmpl");
+
+  function flashSave(msg, isErr) {
+    const el = $("saveStatus");
+    el.textContent = msg;
+    el.className = "meta" + (isErr ? " err" : "");
+    if (!isErr) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 2600);
+  }
+  $("savePrompts").onclick = () => {
+    const tmpl = $("usrPrompt").value;
+    if (!tmpl.includes("{question}") || !tmpl.includes("{excerpts}")) {
+      flashSave("Retrieval prompt must keep {question} and {excerpts}.", true);
+      return;
+    }
+    try {
+      localStorage.setItem("rocsys_sys", $("sysPrompt").value);
+      localStorage.setItem("rocsys_tmpl", tmpl);
+      flashSave("Saved ✓ — applied to your next question.");
+    } catch { flashSave("Couldn't save (browser storage blocked).", true); }
+  };
+  $("resetPrompts").onclick = () => {
+    $("sysPrompt").value = DEFAULT_SYS;
+    $("usrPrompt").value = DEFAULT_TMPL;
+    try { localStorage.removeItem("rocsys_sys"); localStorage.removeItem("rocsys_tmpl"); } catch {}
+    flashSave("Reset to defaults.");
+  };
   $("q").addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask();
   });
@@ -181,6 +231,8 @@ Now write the answer, citing excerpts inline as [n].</pre>
           k: parseInt($("k").value, 10),
           model: $("model").value,
           reasoning: $("reasoning").checked,
+          system: $("sysPrompt").value,
+          userTemplate: $("usrPrompt").value,
         }),
       });
       const data = await resp.json();

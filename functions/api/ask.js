@@ -30,6 +30,14 @@ const SYSTEM =
   "or reproduce the excerpts verbatim, and begin with the answer itself. If the " +
   "excerpts do not cover the question, say so plainly.";
 
+// Retrieval prompt template. {question} and {excerpts} are substituted server-side.
+const DEFAULT_TEMPLATE =
+  "Question: {question}\n\n" +
+  "Numbered excerpts (context only — do not repeat them back):\n{excerpts}\n\n" +
+  "Now write the answer, citing excerpts inline as [n].";
+
+const PROMPT_MAX = 4000; // cap on a caller-supplied prompt
+
 export async function onRequestPost(context) {
   const { request, env } = context;
 
@@ -64,6 +72,19 @@ export async function onRequestPost(context) {
   const k = clamp(parseInt(body.k, 10) || 8, 1, 20);
   const model = MODELS[body.model] || MODELS.haiku;
   const reasoning = body.reasoning === true;
+  // Optional caller-customized prompts (bounded). The retrieval template is only
+  // accepted if it keeps both placeholders, so substitution can't silently drop
+  // the question or the excerpts.
+  const customSystem =
+    typeof body.system === "string" && body.system.trim()
+      ? body.system.trim().slice(0, PROMPT_MAX)
+      : null;
+  const customTemplate =
+    typeof body.userTemplate === "string" &&
+    body.userTemplate.includes("{question}") &&
+    body.userTemplate.includes("{excerpts}")
+      ? body.userTemplate.slice(0, PROMPT_MAX)
+      : null;
 
   let hits;
   try {
@@ -77,7 +98,7 @@ export async function onRequestPost(context) {
 
   let answer;
   try {
-    answer = await synthesize(env, question, hits, model, reasoning);
+    answer = await synthesize(env, question, hits, model, reasoning, customSystem, customTemplate);
   } catch (e) {
     return json({ error: "Synthesis failed: " + e.message }, 502);
   }
@@ -167,24 +188,22 @@ async function weaviateSearch(env, question, k) {
   throw new Error(`Weaviate HTTP ${lastStatus} after retries`);
 }
 
-async function synthesize(env, question, hits, model, reasoning) {
+async function synthesize(env, question, hits, model, reasoning, sysPrompt, template) {
   const excerpts = hits
     .map((h, i) => `[${i + 1}] ${h.title} — ${h.url}\n${h.content}`)
     .join("\n\n");
 
+  // substitute placeholders (replace-all via split/join; question first so an
+  // excerpt that literally contains "{question}" isn't touched)
+  const userContent = (template || DEFAULT_TEMPLATE)
+    .split("{question}").join(question)
+    .split("{excerpts}").join(excerpts);
+
   const payload = {
     model,
     max_tokens: reasoning ? 6000 : 1800,
-    system: SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content:
-          `Question: ${question}\n\n` +
-          `Numbered excerpts (context only — do not repeat them back):\n${excerpts}\n\n` +
-          `Now write the answer, citing excerpts inline as [n].`,
-      },
-    ],
+    system: sysPrompt || SYSTEM,
+    messages: [{ role: "user", content: userContent }],
   };
   // extended thinking ("reasoning"). Opus 4.8 uses the newer adaptive-thinking
   // API (type: adaptive + output_config.effort); Sonnet 4.6 / Haiku 4.5 use the
